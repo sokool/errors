@@ -112,7 +112,7 @@ func TestGetErr(t *testing.T) {
 	a := errors.Errorf("eloszki")
 	b := fmt.Errorf("second %w", a)
 	c := fmt.Errorf("third %w", b)
-	d := errors.Err(c)
+	d := errors.Read(c)
 
 	if a != d {
 		t.Fatal()
@@ -123,7 +123,7 @@ func TestGetErr(t *testing.T) {
 
 	x := errors.Errorf("#4 %s %w %%nio %d", "elo", fmt.Errorf("#3 %w", fmt.Errorf("#2 %w", fmt.Errorf("#1"))), 13)
 
-	y := errors.ErrL(x)
+	y := errors.Trace(x)
 	fmt.Println("----")
 
 	for _, err := range y {

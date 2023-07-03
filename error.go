@@ -9,8 +9,8 @@ import (
 )
 
 type Error struct {
-	s   struct{ Message, Name, Code string }
-	err error
+	message, name, code string
+	prev                error
 }
 
 func New(message, name, code string, caller ...int) *Error {
@@ -24,7 +24,7 @@ func New(message, name, code string, caller ...int) *Error {
 			name, code = runtime.FuncForPC(p).Name(), fmt.Sprintf("%s@L%d", f[strings.LastIndex(f, "/")+1:], l)
 		}
 	}
-	err.s.Message, err.s.Name, err.s.Code = message, name, code
+	err.message, err.name, err.code = message, name, code
 	return &err
 }
 
@@ -44,7 +44,7 @@ func Errorf(format string, args ...any) *Error {
 	var k int
 	for i := range format {
 		if i+2 <= s && format[i:i+2] == "%w" {
-			e.err = args[k].(error)
+			e.prev = args[k].(error)
 			break
 		}
 		if format[i] == '%' {
@@ -55,7 +55,7 @@ func Errorf(format string, args ...any) *Error {
 	return e
 }
 
-func Err(from error) *Error {
+func Read(from error) *Error {
 	var e *Error
 	if errors.As(from, &e) {
 		return e
@@ -64,19 +64,19 @@ func Err(from error) *Error {
 }
 
 func (e *Error) Name() string {
-	return e.s.Name
+	return e.name
 }
 
 func (e *Error) Code() string {
-	return e.s.Code
+	return e.code
 }
 
 func (e *Error) Message() string {
-	return e.s.Message
+	return e.message
 }
 
 func (e *Error) Error() string {
-	s := fmt.Sprintf("%s#%s: %s", e.s.Name, e.s.Code, e.s.Message)
+	s := fmt.Sprintf("%s#%s: %s", e.name, e.code, e.message)
 	if s[:3] == "#: " {
 		s = s[3:]
 	}
@@ -90,14 +90,14 @@ func (e *Error) Error() string {
 }
 
 func (e *Error) Unwrap() error {
-	return e.err
+	return e.prev
 }
 
 func (e *Error) MarshalJSON() ([]byte, error) {
-	return json.Marshal(e.s)
+	return json.Marshal(map[string]any{"message": e.message, "name": e.name, "code": e.code})
 }
 
-func ErrL(err error) (o []error) {
+func Trace(err error) (o []error) {
 	o = append(o, err)
 	for {
 		//s1 := err.Error()
