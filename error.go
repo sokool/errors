@@ -4,71 +4,108 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
 type Error struct {
-	message, name, code string
-	prev                error
+	wrapped error
+	message string
+	tag     string
+	code    string
+	call    int
+	id      uint32
+	trace   struct {
+		file string
+		line int
+		funk string
+	}
 }
 
-func New(message, name, code string, caller ...int) *Error {
-	if len(caller) == 0 {
-		caller = append(caller, 1)
-	}
-	var err Error
-	message, name, code = strings.TrimSpace(message), strings.TrimSpace(name), strings.TrimSpace(code)
-	if name == "" && code == "" {
-		if p, f, l, ok := runtime.Caller(caller[0]); ok {
-			name, code = runtime.FuncForPC(p).Name(), fmt.Sprintf("%s@L%d", f[strings.LastIndex(f, "/")+1:], l)
-		}
-	}
-	err.message, err.name, err.code = message, name, code
-	return &err
+func New(message string, args ...any) *Error {
+	return Trace(1, message, args...)
 }
 
-func Errorf(format string, args ...any) *Error {
-	var m, n, c = fmt.Errorf(format, args...).Error(), "", ""
+func Trace(deep int, message string, args ...any) *Error {
+	e := Error{message: strings.TrimSpace(fmt.Errorf(message, args...).Error())}
+	var m = fmt.Errorf(message, args...).Error()
 	if i := strings.Index(m, ":"); i > 0 && !strings.Contains(m[:i], " ") {
-		n, m = m[:i], m[i+1:]
-		if k := strings.Index(n, "#"); k >= 0 {
-			c, n = n[k+1:], n[:k]
+		e.tag, e.message = m[:i], m[i+1:]
+		if k := strings.Index(e.tag, "#"); k >= 0 {
+			e.code, e.tag = e.tag[k+1:], e.tag[:k]
 		}
+		//fmt.Printf("tag:%s, code:%s, message:%s, m:%s\n", e.tag, e.code, e.message, m)
+	}
+	if p, f, l, ok := runtime.Caller(deep + 1); ok {
+		e.trace.funk, e.trace.file, e.trace.line = runtime.FuncForPC(p).Name(), f, l
 	}
 
-	e := New(m, n, c, 2)
+	//stack := make([]uintptr, 50)
+	//runtime.Callers(deep+2, stack[:])
+	//x := runtime.CallersFrames(stack)
+	//for {
+	//	f, ok := x.Next()
+	//	if !ok {
+	//		break
+	//	}
+	//	fmt.Printf("%s:%d -> %s\n", f.File, f.Line, f.Function)
+	//}
 
-	// find wrapped error and store it in domain.Error
-	var s = len(format)
-	var k int
-	for i := range format {
-		if i+2 <= s && format[i:i+2] == "%w" {
-			e.prev = args[k].(error)
+	var s, k = len(message), 0
+	for i := range message {
+		if i+2 <= s && message[i:i+2] == "%w" {
+			e.wrapped = args[k].(error)
 			break
 		}
-		if format[i] == '%' {
+		if message[i] == '%' {
 			k++
 		}
 	}
 
-	return e
-}
-
-func Read(from error) *Error {
-	var e *Error
-	if errors.As(from, &e) {
-		return e
+	if e.id == 0 {
+		t := fmt.Sprintf("%s%s%s", e.code, e.tag, fmt.Sprintf(message, args...))
+		h := fnv.New32a()
+		h.Write([]byte(t))
+		e.id = h.Sum32()
 	}
-	return nil
+
+	return &e
 }
 
-func (e *Error) Name() string {
-	return e.name
+func (e *Error) ID() uint32 {
+	return e.id
+}
+
+func (e *Error) Exp() {
+}
+
+func (e *Error) Tag() string {
+	return e.tag
+}
+
+func (e *Error) Func() string {
+	return e.trace.funk
+}
+
+func (e *Error) Line() int {
+	return e.trace.line
+}
+
+func (e *Error) File() string {
+	return e.trace.file
 }
 
 func (e *Error) Code() string {
 	return e.code
+}
+
+func (e *Error) CodeNumber() int {
+	if n, _ := strconv.Atoi(e.code); n > 0 {
+		return n
+	}
+	return -1
 }
 
 func (e *Error) Message() string {
@@ -76,7 +113,23 @@ func (e *Error) Message() string {
 }
 
 func (e *Error) Error() string {
-	s := fmt.Sprintf("%s#%s: %s", e.name, e.code, e.message)
+
+	c := e.Code()
+	t := e.Tag()
+	m := e.Message()
+	if c != "" && t != "" {
+		m = fmt.Sprintf("%s#%s:%s", t, c, m)
+	} else if c != "" {
+		m = fmt.Sprintf("#%s:%s", c, m)
+	} else if t != "" {
+		m = fmt.Sprintf("%s:%s", t, m)
+	}
+	strings.TrimSpace(m)
+	return strings.TrimSpace(m)
+	//email#h1: invalid hostname
+
+	//return fmt.Sprintf("%s %s:%d", e.Message(), e.trace.file, e.trace.line)
+	s := fmt.Sprintf("%s#%s:%s", e.tag, e.code, e.Message())
 	if s[:3] == "#: " {
 		s = s[3:]
 	}
@@ -89,28 +142,42 @@ func (e *Error) Error() string {
 	return strings.Replace(s, "#:", ":", -1)
 }
 
+func (e *Error) String() string {
+	return e.Error()
+}
+
 func (e *Error) Unwrap() error {
-	return e.prev
+	return e.wrapped
 }
 
 func (e *Error) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]any{"message": e.message, "name": e.name, "code": e.code})
+	return json.Marshal(map[string]any{
+		"id":      e.id,
+		"message": e.message,
+		"tag":     e.tag,
+		"code":    e.code,
+		"file":    e.trace.file,
+		"line":    e.trace.line,
+		"func":    e.trace.funk,
+	})
 }
 
-func Trace(err error) (o []error) {
-	o = append(o, err)
+func Extract(from error) (o []error) {
+	o = append(o, from)
 	for {
-		//s1 := err.Error()
-		var err2 error
-		if err2 = errors.Unwrap(err); err2 == nil {
-			//fmt.Printf("%T: %s\n", err2, s1)
+		var err error
+		if err = errors.Unwrap(from); err == nil {
 			return
 		}
-
-		//s2 := err2.Error()
-		//s := strings.Replace(s1, s2, "", -1)
-		//fmt.Printf("%T: %s\n", err, s)
-		o = append(o, err2)
-		err = err2
+		o = append(o, err)
+		from = err
 	}
+}
+
+func First(from error) *Error {
+	var e *Error
+	if errors.As(from, &e) {
+		return e
+	}
+	return nil
 }
